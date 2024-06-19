@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>iDotMatrix - Twitch Emote Displayer</title>
+  </head>
+  <body>
+      
+      Channel: <input id='twitch' placeholder="jaku"></input><button id="connect">Connect iDotMatrix</button>
+      <script src="js/tmi.js"></script>
+    <script>
+
+    const pixels = [];
+    let _characteristic;
+
+    const lastChannel = localStorage.getItem("channel");
+    if (lastChannel) {
+        channels.push(lastChannel);
+        document.getElementById("twitch").value = lastChannel;
+    } else {
+        document.getElementById("connect").disabled = true;
+    };
+
+    let channels = [];
+    const client = new tmi.Client({
+    connection: {
+        secure: true,
+        reconnect: true,
+    },
+    channels,
+    });
+
+    client.on("message", (wat, tags, message, self) => {
+    if (self) return;
+    const { username } = tags;
+
+    if (tags.emotes) {
+        const emoteIds = Object.keys(tags.emotes);
+
+        // get the first emote in the message and use that to display on the iDotMatrix
+        const emote = emoteIds[0];
+        const emoteUrl = `https://static-cdn.jtvnw.net/emoticons/v1/${emote}/1.0`;
+
+        fetch(emoteUrl)
+        .then((response) => response.blob())
+        .then((blob) => createImageBitmap(blob))
+        .then((bitmap) => {
+            const canvas = document.createElement("canvas");
+            const ctx = canvas.getContext("2d");
+            canvas.width = 32;
+            canvas.height = 32;
+
+            // Draw the image onto the canvas, resizing it to 32x32
+            ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+
+            // Convert canvas to PNG
+            canvas.toBlob(async function (blob) {
+            const newReader = new FileReader();
+            newReader.onload = async function (e) {
+                const pngData = new Uint8Array(e.target.result);
+                const payloads = createPayloads(pngData);
+                await sendPayload(payloads);
+            };
+            newReader.readAsArrayBuffer(blob);
+            }, "image/png");
+        })
+        .catch((error) => {
+            console.error("Error fetching or processing the image:", error);
+        });
+        }
+      });
+
+      function connectTwitch() {
+        const channel = document.getElementById("twitch").value;
+        localStorage.setItem("channel", channel);
+        channels.push(channel);
+        client.connect().catch(console.error);
+      }
+
+      document.getElementById("twitch").addEventListener("input", function () {
+        const channel = document.getElementById("twitch").value;
+        console.log("HEY")
+        document.getElementById("connect").disabled = !channel;
+      });
+
+      async function sendPayload(payload) {
+        if (!_characteristic) {
+          console.error("Bluetooth device not found");
+          return;
+        }
+
+        const chunks = splitIntoChunks(payload, 512);
+        for (let payload of chunks) {
+          await _characteristic.writeValue(payload);
+        }
+      }
+
+      function createPayloads(pngData) {
+        const pngChunks = splitIntoChunks(pngData, 655555555);
+        const idk = pngData.length + pngChunks.length;
+        const idkBytes = new Int16Array([idk]);
+        const pngLenBytes = new Int32Array([pngData.length]);
+
+        const idkBuffer = new DataView(idkBytes.buffer);
+        const pngLenBuffer = new DataView(pngLenBytes.buffer);
+
+        let payloads = new Uint8Array();
+        pngChunks.forEach((chunk, i) => {
+          const header = new Uint8Array([
+            idkBuffer.getUint8(0),
+            idkBuffer.getUint8(1),
+            0,
+            0,
+            i > 0 ? 2 : 0,
+          ]);
+
+          const payload = new Uint8Array(header.length + 4 + chunk.length);
+          payload.set(header, 0);
+          payload.set(
+            [
+              pngLenBuffer.getUint8(0),
+              pngLenBuffer.getUint8(1),
+              pngLenBuffer.getUint8(2),
+              pngLenBuffer.getUint8(3),
+            ],
+            header.length
+          );
+          payload.set(chunk, header.length + 4);
+
+          const newPayloads = new Uint8Array(payloads.length + payload.length);
+          newPayloads.set(payloads, 0);
+          newPayloads.set(payload, payloads.length);
+          payloads = newPayloads;
+        });
+
+        return payloads;
+      }
+
+      function splitIntoChunks(data, chunkSize) {
+        let chunks = [];
+        for (let i = 0; i < data.length; i += chunkSize) {
+          let chunk = data.slice(i, i + chunkSize);
+          chunks.push(chunk);
+        }
+        return chunks;
+      }
+
+      document.getElementById("connect").addEventListener("click", function () {
+        if (!navigator.bluetooth) {
+          alert("Web Bluetooth API is not available in this browser!");
+          return;
+        }
+
+        console.log("Requesting Bluetooth Device...");
+        navigator.bluetooth
+          .requestDevice({
+            filters: [
+              { name: "IDM-19000E" }, // Replace with the name of the device you want to filter
+            ],
+            optionalServices: [0x00fa],
+          })
+          .then((device) => {
+            console.log("Connecting...");
+            return device.gatt.connect();
+          })
+          .then((server) => {
+            console.log("Getting Service...");
+            return server.getPrimaryService(0x00fa);
+          })
+          .then((service) => {
+            return service.getCharacteristic(
+              "0000fa02-0000-1000-8000-00805f9b34fb"
+            );
+          })
+          .then((characteristic) => {
+            // initialize the panel
+            const data = new Uint8Array([10, 0, 5, 1, 0, 0, 0, 0, 0, 0]);
+            _characteristic = characteristic;
+            return characteristic.writeValue(data);
+          })
+          .then(() => {
+            console.log("Write operation successful");
+            //connect to twitch chat
+
+            connectTwitch();
+          })
+          .catch((error) => {
+            console.log(`Argh! ${error}`);
+          });
+      });
+    </script>
+  </body>
+</html>
